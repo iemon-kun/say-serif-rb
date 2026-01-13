@@ -22,6 +22,12 @@ ruby -S gem install mcp
 ruby main.rb
 ```
 
+## 実行権限について
+`git clone/pull` なら実行ビットは基本的に引き継がれますが、ZIP ダウンロードや環境設定によっては反映されない場合があります。その場合はローカルで実行権限を付与してください。
+```bash
+chmod +x main.rb
+```
+
 ## MCP設定例
 - **/ABSOLUTE/PATH/TO/**を実際のパスに書き換えます。
 ```json
