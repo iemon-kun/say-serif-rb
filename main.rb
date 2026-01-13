@@ -12,11 +12,11 @@ SERVER_VERSION = "0.2.0"
 DEFAULT_SPEED = 1.0
 MIN_SPEED = 0.25
 MAX_SPEED = 4.0
-DEFAULT_WPM = 175
+SAY_BASE_WPM = 175
 
-MAX_CONCURRENT = 1
-DEDUPE_SECONDS = 30.0
-HARD_TIMEOUT_SECONDS = 300.0
+SPEECH_CONCURRENCY_LIMIT = 1 # 同時再生を避け、音声が重なる混乱を防ぐため。
+SPEECH_DEDUPE_WINDOW_SECONDS = 30.0 # 連打や重複要求で音声エンジンが詰まるのを防ぐため。
+SAY_PROCESS_HARD_TIMEOUT_SECONDS = 300.0 # say が固着した場合の安全弁のため。
 
 LOG_PATH = File.expand_path("tmp/boot.log", __dir__)
 
@@ -37,8 +37,8 @@ class SpeechManager
     @recent = {}
   end
 
-  # say を非同期で起動し、すぐに応答メッセージを返す。
   def speak(text, speed: DEFAULT_SPEED)
+    # 読み上げ品質が落ちないよう装飾記号を除去する。
     clean = strip_markdown(text.to_s)
     return "Text is empty." if clean.empty?
     return "Invalid speed (must be a positive number)." unless speed.is_a?(Numeric) && speed.positive?
@@ -48,29 +48,28 @@ class SpeechManager
 
     key = request_key(clean, speed)
     now = Time.now.to_f
-    prune_recent(now)
+    prune_recent_requests(now)
 
     @mutex.synchronize do
       if @active
         return "Speech already running." if @active[:key] == key
-        return "Speech busy (concurrency limit #{MAX_CONCURRENT})."
+        return "Speech busy (concurrency limit #{SPEECH_CONCURRENCY_LIMIT})."
       end
       last = @recent[key]
-      if last && (now - last) < DEDUPE_SECONDS
+      if last && (now - last) < SPEECH_DEDUPE_WINDOW_SECONDS
         return "Speech request deduped."
       end
       @recent[key] = now
 
-      result = start_process(clean, speed)
+      result = start_say_process(clean, speed)
       return result if result.is_a?(String)
 
       @active = { pid: result, key: key, started_at: now }
     end
 
-    "Speech started (engine=say, mode=async, speed=#{format_speed(speed)}x, hard_timeout=#{HARD_TIMEOUT_SECONDS}s, dedupe=#{DEDUPE_SECONDS}s, concurrency=#{MAX_CONCURRENT})"
+    "Speech started (engine=say, mode=async, speed=#{format_speed(speed)}x, hard_timeout=#{SAY_PROCESS_HARD_TIMEOUT_SECONDS}s, dedupe=#{SPEECH_DEDUPE_WINDOW_SECONDS}s, concurrency=#{SPEECH_CONCURRENCY_LIMIT})"
   end
 
-  # 実行中の say を停止する（この実装は1件のみ）。
   def stop_speech
     pid = nil
     @mutex.synchronize do
@@ -78,7 +77,7 @@ class SpeechManager
       pid = @active[:pid]
       @active = nil
     end
-    terminate(pid)
+    terminate_say_process(pid)
     "Stopped speech (1)."
   end
 
@@ -100,21 +99,21 @@ class SpeechManager
     format("%.3f:%s", speed, digest)
   end
 
-  def prune_recent(now)
-    cutoff = now - [DEDUPE_SECONDS * 2, 60.0].max
+  def prune_recent_requests(now)
+    cutoff = now - [SPEECH_DEDUPE_WINDOW_SECONDS * 2, 60.0].max
     @recent.delete_if { |_k, ts| ts < cutoff }
   end
 
-  def start_process(text, speed)
+  def start_say_process(text, speed)
     cmd = ["say"]
     if speed != DEFAULT_SPEED
-      wpm = (DEFAULT_WPM * speed).round
+      wpm = (SAY_BASE_WPM * speed).round
       wpm = [[wpm, 80].max, 600].min
       cmd += ["-r", wpm.to_s]
     end
 
     pid = Process.spawn(*cmd, text, out: "/dev/null", err: "/dev/null")
-    monitor(pid)
+    monitor_say_process(pid)
     pid
   rescue Errno::ENOENT
     "Speech engine command not found."
@@ -122,14 +121,14 @@ class SpeechManager
     "Speech engine is not executable."
   end
 
-  def monitor(pid)
+  def monitor_say_process(pid)
     Thread.new do
       start = Time.now.to_f
       loop do
         waited = Process.waitpid(pid, Process::WNOHANG)
         break if waited
-        if (Time.now.to_f - start) >= HARD_TIMEOUT_SECONDS
-          terminate(pid)
+        if (Time.now.to_f - start) >= SAY_PROCESS_HARD_TIMEOUT_SECONDS
+          terminate_say_process(pid)
           Process.waitpid(pid) rescue nil
           break
         end
@@ -141,7 +140,7 @@ class SpeechManager
     end
   end
 
-  def terminate(pid)
+  def terminate_say_process(pid)
     Process.kill("TERM", pid)
     sleep 0.2
     Process.kill("KILL", pid)

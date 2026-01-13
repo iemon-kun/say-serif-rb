@@ -4,6 +4,8 @@ macOSの`say`で読み上げる最小構成のMCP stdioサーバーです。
 
 既定値: 同時実行=1、重複抑止=30秒、ハードタイムアウト=300秒。
 
+[English version](README.en.md)
+
 ## 依存
 - Ruby
 - gem: `mcp`（Ruby SDK）
